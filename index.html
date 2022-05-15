@@ -13,7 +13,7 @@
                 2. 提供可用于Node.js的JavaScript编程样例<br />
                 <br />
                 <br />
-                该页面将调用分牙服务，将传入的半颌三维模型每个面片标注FDI牙号。<br />
+                该页面将调用分牙服务，将传入的半颌三维模型STL每个面片标注FDI牙号。<br />
                 分牙后将产生seg_labels.txt与processed_mesh.stl。<br />
                 STL为处理后（面片简化/配准）的三维模型，seg_labels.txt是处理后三维模型每个面片的FDI牙号。<br />
                 seg_labels.txt的行数与processed_mesh.stl的面片数量一致。
@@ -38,7 +38,7 @@
             </div>
         </div>
         <div style="margin: 30px">
-            选择半颌文件: <input type="file" id="file" accept="*" /> <br /><br />
+            选择半颌STL文件: <input type="file" id="file" accept="*" /> <br /><br />
 
             选择上下颌:
             <input type="radio" name="jaw_type" id="r1" value="Upper"><label for="r1">上颌</label>
