@@ -1,203 +1,32 @@
 <!DOCTYPE html>
-<html lang="zh-cn">
-    <head>
-        <meta http-equiv="content-type" content="text/html; charset=utf-8" />
-        <title>朝厚云服务JavaScript调用样例</title>
-    </head>
-    <body>
-        <div>
-            <h1>朝厚云服务API调用样例</h1>
-            <div style="color:blue; font-weight: bold; margin: 30px">
-                本示例页面用于: <br />
-                1. 在浏览器上快速试用API<br />
-                2. 提供可用于Node.js的JavaScript编程样例<br />
-                <br />
-                <br />
-                该页面将调用分牙服务，将传入的半颌三维模型STL每个面片标注FDI牙号。<br />
-                分牙后将产生seg_labels.txt与processed_mesh.stl。<br />
-                STL为处理后（面片简化/配准）的三维模型，seg_labels.txt是处理后三维模型每个面片的FDI牙号。<br />
-                seg_labels.txt的行数与processed_mesh.stl的面片数量一致。
-            </div>
-            <div style="color:red; margin: 30px">
-                本示例页面的代码地址为
-                <a href="https://gitee.com/chohotech/api_javascript_sample" target="_blank">
-                    gitee.com/chohotech/api_javascript_sample
-                </a><br />
-                调用API的核心代码位于index.html中的start_seg函数<br />
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redirecting...</title>
+    <script>
+        // Check if the browser's preferred language is Chinese
+        const userLanguage = navigator.language || navigator.userLanguage;
+        const isChinese = userLanguage.startsWith('zh');
 
-                <span style="font-weight: bold;">
-                    JavaScript编程样例旨在提供Node.js编程参考，请勿将其写入JavaScript前端代码！
-                    否则用户将获取到您的调用信息，您将为用户非法使用该信息产生的调用付费！
-                </span>
-            </div>
+        // Redirect accordingly
+        if (isChinese) {
+            const simplifiedChinese = ['zh', 'zh-CN', 'zh-SG'];
+            const traditionalChinese = ['zh-TW', 'zh-HK', 'zh-MO'];
 
-
-
-            <div style="font-weight: bold; margin: 30px">
-                请填入以下信息后点击启动分割任务按钮。
-            </div>
-        </div>
-        <div style="margin: 30px">
-            选择半颌STL文件: <input type="file" id="file" accept="*" /> <br /><br />
-
-            选择上下颌:
-            <input type="radio" name="jaw_type" id="r1" value="Upper"><label for="r1">上颌</label>
-            &nbsp;
-            <input type="radio" name="jaw_type" id="r2" value="Lower" checked><label for="r2">下颌</label>
-            <br /><br />
-            base_url: <input type="text" name="base_url" id="base_url">
-            <br /><br />
-            file_server_url: <input type="text" name="file_server_url" id="file_server_url">
-            <br /><br />
-            user_id: <input type="text" name="user_id" id="user_id">
-            <br /><br />
-            zh_token: <input type="text" name="zh_token" id="zh_token">
-
-            <br /> <br /> <br />
-            <button type="button" id="launchbtn" onclick="seg_wrapper()">启动分割任务</button>
-        </div>
-        <div id="resdiv"></div>
-    </body>
-    <script type="text/javascript" src="jquery-3.6.0.min.js"></script>
-    <script type="text/javascript">
-        async function start_seg(){
-            $("#resdiv").html("");
-            $("#launchbtn").html("请等待任务完成，运行log与结果在按钮下方");
-            $("#launchbtn").attr('disabled', true);
-            let file_server_url = $("#file_server_url").val();
-            let user_id = $("#user_id").val();
-            let zh_token = $("#zh_token").val();
-            let base_url = $("#base_url").val();
-            let jaw_type = $("input[type='radio'][name='jaw_type']:checked").val();
-
-            // Step 1. upload mesh to file server
-            let now = Math.floor(Date.now() / 1000);
-            let res = await $.ajax({
-                url: file_server_url + "/scratch/APIClient/" +
-                    user_id + "/upload_url?postfix=stl",
-                headers: {"X-ZH-TOKEN": zh_token},
-                type: "GET"
-            })
-
-            let mesh_urn = "urn:zhfile:o:s:APIClient:"+ user_id + ":" +
-                res.substring(
-                    res.indexOf(user_id) + user_id.length + 1,
-                    res.indexOf("?")
-                );
-
-            await $.ajax({
-                url : res,
-                type : 'PUT',
-                data : $('#file')[0].files[0],
-                cache: false,
-                processData: false,
-                contentType: "",
-
-            });
-            $("#resdiv").html($("#resdiv").html() + "Upload takes " + (Math.floor(Date.now() / 1000)- now) +" seconds<br />");
-            // Step 2. construct request
-            let job_req = {
-                "spec_group": "mesh-processing",
-                "spec_name": "oral-seg",
-                "spec_version": "1.0-snapshot",
-                "user_id" : user_id,
-                "user_group" : "APIClient",
-                "input_data" : {
-                    "jaw_type" : jaw_type,
-                    "mesh" : {
-                        "type" : "stl",
-                        "data" : mesh_urn
-                    }
-                },
-                "output_config" : {
-                    "mesh" : {
-                        "type" : "stl"
-                    }
-                }
-            };
-
-            res = await $.ajax({
-                url: base_url + "/run",
-                headers: {"X-ZH-TOKEN": zh_token,
-                          "Content-Type": "application/json",
-                          "accept": "application/json"},
-                type: "POST",
-                data: JSON.stringify(job_req),
-                contentType: "application/json; charset=utf-8",
-                dataType: "json"
-            });
-
-            let run_id = res["run_id"];
-
-            $("#resdiv").html($("#resdiv").html() + "run id is: " + run_id + "<br />waiting for job completion<br />")
-
-            // Step 3. wait until job finished
-            now = Math.floor(Date.now() / 1000);
-            while(true){
-                await new Promise(r => setTimeout(r, 3000));
-                res = await $.ajax({
-                    url: base_url + "/run/" + run_id,
-                    headers: {"X-ZH-TOKEN": zh_token},
-                    type: "GET",
-                    dataType: "json"
-                });
-                if(res["failed"]){
-                    $("#launchbtn").html("启动分割任务");
-                    $("#launchbtn").attr('disabled', false);
-                    $("#resdiv").html($("#resdiv").html() + "job failed with reason: " + res["reason_public"]);
-                    return;
-                }
-                if(res["completed"]) break;
+            // Redirect to index_cn.html for Simplified Chinese or Traditional Chinese
+            if (simplifiedChinese.includes(userLanguage) || traditionalChinese.includes(userLanguage)) {
+                window.location.href = 'index_cn.html';
+            } else {
+                window.location.href = 'index_en.html';
             }
-            $("#resdiv").html($("#resdiv").html() + "job completed in " + (Math.floor(Date.now() / 1000)- now) +" seconds<br />");
-
-            // Step 4. get job results
-            res = await $.ajax({
-                url: base_url + "/data/" + run_id,
-                headers: {"X-ZH-TOKEN": zh_token,
-                            "accept": "application/json"},
-                type: "GET",
-                dataType: "json"
-            });
-
-            let blob_seg_labels = new Blob([res["seg_labels"].join('\n')], {
-                type: 'text/plain'
-            });
-
-            // Step 5. download processed mesh from file server
-            res = await $.ajax({
-                url: file_server_url + "/file/download?urn=" + res["mesh"]["data"],
-                headers: {"X-ZH-TOKEN": zh_token},
-                type: "GET",
-                cache: false,
-                xhrFields: {
-                    responseType: "blob"
-                }
-            });
-
-            $("#resdiv").html($("#resdiv").html() +
-                "<br />Results are ready for download:<br /><a href='" +
-                URL.createObjectURL(blob_seg_labels) +
-                "' download='seg_labels.txt'>seg_labels.txt</a>&nbsp;&nbsp;&nbsp;" +
-                "<a href='" + URL.createObjectURL(res) +
-                "' download='processed_mesh.stl'>processed_mesh.stl</a><br /><br />");
-
-            $("#resdiv").html($("#resdiv").html() +
-                "seg_labels.txt contains FDI of each face in processed_mesh.stl <br /><br />" +
-                "To start another job, fill the form again and click the button!");
-            $("#launchbtn").html("启动分割任务");
-            $("#launchbtn").attr('disabled', false);
-        }
-        async function seg_wrapper(){
-            try {
-                await start_seg();
-            } catch(error) {
-                console.log("job errored with following error object")
-                console.log(error);
-                $("#resdiv").html($("#resdiv").html() + "job failed. See console for details.");
-                $("#launchbtn").html("启动分割任务");
-                $("#launchbtn").attr('disabled', false);
-            }
+        } else {
+            window.location.href = 'index_en.html';
         }
     </script>
+</head>
+<body>
+    <p>Redirecting to the appropriate page...</p>
+</body>
 </html>
