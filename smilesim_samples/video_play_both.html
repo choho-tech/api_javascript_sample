@@ -1,0 +1,316 @@
+<!-- Please Use DeepSeek or similar AI tools to translate HTML comments. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ChohoTech Smile Video Simulation</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: sans-serif;
+      background: #f0f0f0;
+    }
+    h1 {
+      text-align: center;
+      margin: 20px 0;
+    }
+    #uploadBtn, #retryBtn {
+      display: block;
+      margin: 0 auto 20px auto;
+      font-size: 1rem;
+      padding: 10px 20px;
+      cursor: pointer;
+    }
+    #progress {
+      text-align: center;
+      margin: 20px 0;
+      font-size: 1.1rem;
+    }
+    #errorDiv {
+      margin: 20px auto;
+      width: 80%;
+      color: red;
+      font-size: 1.1rem;
+    }
+    /* 两个视频并排放置 */
+    #videoContainer {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 40px;           /* 两个视频的间距 */
+      flex-wrap: wrap;    /* 如果屏幕窄，自动换行 */
+      margin-bottom: 50px; /* 与页面底部按钮留些空间 */
+    }
+    .videoBox {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      max-width: 45vw; /* 响应式，让视频不超出屏幕过多 */
+    }
+    .videoLabel {
+      margin-bottom: 8px;
+      font-weight: bold;
+    }
+    video {
+      width: 100%;
+      max-width: 500px; /* 根据需要限制单个视频的最大宽度 */
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <h1>Smile Video Simulation Demo</h1>
+
+  <!-- 上传按钮 -->
+  <button id="uploadBtn" onclick="pickFile()">Upload Smile MP4 Video</button>
+  <!-- 文件选择框，只允许 mp4 -->
+  <input type="file" id="fileInput" accept="video/mp4" style="display:none;" />
+
+  <!-- 进度显示 -->
+  <div id="progress" style="display:none;"></div>
+
+  <!-- 错误信息显示 -->
+  <div id="errorDiv" style="display:none;"></div>
+
+  <!-- 结果视频并排放置 -->
+  <div id="videoContainer" style="display:none;">
+    <!-- 左侧原视频 -->
+    <div class="videoBox">
+      <div class="videoLabel">Original Video</div>
+      <video id="originalVideo" loop muted controls></video>
+    </div>
+    <!-- 右侧处理后视频 -->
+    <div class="videoBox">
+      <div class="videoLabel">Simulated Video</div>
+      <video id="processedVideo" loop muted controls></video>
+    </div>
+  </div>
+
+  <!-- 重试按钮 -->
+  <button id="retryBtn" style="display:none;" onclick="tryAnother()">Try another MP4 smile video</button>
+
+  <script>
+    /*******************************************************
+     * ==========  服务器及凭证信息  ========================
+     *******************************************************/
+
+    const params = new URLSearchParams(window.location.search);
+    const base_url = params.get('base_url');
+    const file_server_url = params.get('file_server_url');
+    const user_id = params.get("user_id");
+    const zh_token = params.get("zh_token");
+
+    let originalVideoEl = null;   // HTMLVideoElement: 原视频
+    let processedVideoEl = null;  // HTMLVideoElement: 处理后视频
+
+    /*******************************************************
+     * ==========  主流程  =================================
+     *******************************************************/
+
+    // 点击按钮 -> 选择 mp4 文件
+    function pickFile() {
+      document.getElementById("fileInput").click();
+    }
+
+    // 监听文件选择
+    document.getElementById("fileInput").addEventListener("change", async (evt) => {
+      if (evt.target.files.length === 0) return; // 用户没选文件就退出
+      let file = evt.target.files[0];
+
+      // 在前端将原文件放到video标签里(仅做演示对比)
+      originalVideoEl = document.getElementById("originalVideo");
+      originalVideoEl.src = URL.createObjectURL(file);
+      originalVideoEl.load();
+      originalVideoEl.loop = true;
+
+      // 进入后续上传&处理流程
+      startJob(file);
+    });
+
+    // 开始上传&处理
+    async function startJob(file) {
+      // UI处理
+      document.getElementById("uploadBtn").style.display = "none";
+      document.getElementById("progress").style.display = "block";
+      document.getElementById("errorDiv").style.display = "none";
+      document.getElementById("videoContainer").style.display = "none";
+      document.getElementById("retryBtn").style.display = "none";
+
+      try {
+        // 1. 上传视频
+        document.getElementById("progress").innerText = "Uploading your video...";
+        let uploadUrl = await getUploadUrl("mp4");
+        await uploadFile(uploadUrl, file);
+        let videoUrn = getUrnFromUrl(uploadUrl);
+
+        // 2. 创建 smile-video-simulation 任务
+        document.getElementById("progress").innerText = "Processing your video...";
+        let run_id = await createJob(videoUrn);
+
+        // 3. 等待任务完成（1秒轮询）
+        await waitForCompletion(run_id);
+
+        // 4. 获取结果(下载mp4)
+        document.getElementById("progress").innerText = "Pulling back results...";
+        let resultData = await getJobResult(run_id);
+        let processedBlob = await downloadFile(resultData["result"]["video"]);
+
+        // 这里关键：将下载到的 mp4 Blob 再包装成一个带“video.mp4”名称的 File
+        const processedFile = new File([processedBlob], "video.mp4", {type: "video/mp4"});
+        const processedUrl = URL.createObjectURL(processedFile);
+
+        // 在video标签中播放处理后的视频
+        processedVideoEl = document.getElementById("processedVideo");
+        processedVideoEl.src = processedUrl;
+        processedVideoEl.load();
+        processedVideoEl.loop = true;
+
+        // 展示并播放
+        document.getElementById("progress").style.display = "none";
+        document.querySelector("h1").innerText = "Simulation Result";
+        document.getElementById("videoContainer").style.display = "flex";
+
+        // 同步播放(简单方式: 都从头开始)
+        originalVideoEl.currentTime = 0;
+        processedVideoEl.currentTime = 0;
+        originalVideoEl.play().catch(()=>{});
+        processedVideoEl.play().catch(()=>{});
+
+        // 显示重试按钮
+        document.getElementById("retryBtn").style.display = "inline-block";
+
+      } catch (error) {
+        console.error(error);
+        document.getElementById("progress").style.display = "none";
+        document.getElementById("errorDiv").style.display = "block";
+        document.getElementById("errorDiv").innerText = "Simulation Failed: " + error;
+        document.getElementById("retryBtn").style.display = "inline-block";
+      }
+    }
+
+    // 再选一次视频
+    function tryAnother() {
+      document.getElementById("fileInput").value = "";
+      pickFile();
+    }
+
+    /*******************************************************
+     * ==========  调用服务器接口  ==========================
+     *******************************************************/
+
+    // 获取上传URL (强制mp4)
+    async function getUploadUrl(extension) {
+      let url = file_server_url + "/scratch/APIClient/" + user_id + "/upload_url?postfix=" + extension;
+      let res = await fetch(url, {
+        method: "GET",
+        headers: {"X-ZH-TOKEN": zh_token}
+      });
+      if(!res.ok) {
+        throw new Error("Failed to get upload url: " + res.statusText);
+      }
+      let textBody = await res.text(); // e.g. "\"https://xxx.com/...\""
+      return JSON.parse(textBody);
+    }
+
+    // 上传文件
+    async function uploadFile(uploadUrl, file) {
+      let res = await fetch(uploadUrl, {
+        method: "PUT",
+        body: file,
+        headers: {"content-type": ""}
+      });
+      if(!res.ok){
+        throw new Error("Failed to upload file: " + res.statusText);
+      }
+    }
+
+    // 从上传URL中解析URN
+    function getUrnFromUrl(uploadUrl) {
+      // 例: https://xxx/scratch/APIClient/idsdemo-api/xxxx?...
+      let pathPart = uploadUrl.substring(uploadUrl.indexOf(user_id) + user_id.length + 1);
+      pathPart = pathPart.substring(0, pathPart.indexOf("?"));
+      return "urn:zhfile:o:s:APIClient:" + user_id + ":" + pathPart;
+    }
+
+    // 创建视频模拟任务
+    async function createJob(videoUrn) {
+      let job_req = {
+        "spec_group": "smile",
+        "spec_name": "smile-video-simulation",
+        "spec_version": "1.0-snapshot",
+        "user_id": user_id,
+        "user_group": "APIClient",
+        "input_data": {
+          "video": videoUrn
+        }
+      };
+      let res = await fetch(base_url + "/run", {
+        method: "POST",
+        headers: {
+          "X-ZH-TOKEN": zh_token,
+          "Content-Type": "application/json",
+          "accept": "application/json"
+        },
+        body: JSON.stringify(job_req)
+      });
+      if(!res.ok){
+        throw new Error("Failed to create job: " + res.statusText);
+      }
+      let data = await res.json();
+      return data.run_id;
+    }
+
+    // 轮询等待任务完成
+    async function waitForCompletion(run_id) {
+      while(true) {
+        await new Promise(r => setTimeout(r, 1000)); // 1秒轮询
+        let url = base_url + "/run/" + run_id;
+        let res = await fetch(url, {
+          method: "GET",
+          headers: {"X-ZH-TOKEN": zh_token}
+        });
+        if(!res.ok){
+          throw new Error("Failed to check job status: " + res.statusText);
+        }
+        let data = await res.json();
+        if(data.failed){
+          throw new Error(data.reason_public || "Unknown reason");
+        }
+        if(data.completed){
+          break;
+        }
+      }
+    }
+
+    // 获取任务结果
+    async function getJobResult(run_id) {
+      let url = base_url + "/data/" + run_id;
+      let res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "X-ZH-TOKEN": zh_token,
+          "accept": "application/json"
+        }
+      });
+      if(!res.ok){
+        throw new Error("Failed to get job result: " + res.statusText);
+      }
+      return await res.json();
+    }
+
+    // 下载处理后的视频文件
+    async function downloadFile(urn) {
+      let url = file_server_url + "/file/download?urn=" + urn;
+      let res = await fetch(url, {
+        method: "GET",
+        headers: {"X-ZH-TOKEN": zh_token}
+      });
+      if(!res.ok){
+        throw new Error("Failed to download processed video: " + res.statusText);
+      }
+      return await res.blob();
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,461 @@
+<!-- Please Use DeepSeek or similar AI tools to translate HTML comments. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ChohoTech Smile Video Simulation</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: sans-serif;
+      background: #f0f0f0;
+    }
+    h1 {
+      text-align: center;
+      margin: 20px 0;
+    }
+    #uploadBtn, #retryBtn {
+      display: block;
+      margin: 0 auto 20px auto;
+      font-size: 1rem;
+      padding: 10px 20px;
+      cursor: pointer;
+    }
+    #progress {
+      text-align: center;
+      margin: 20px 0;
+      font-size: 1.1rem;
+    }
+    #errorDiv {
+      margin: 20px auto;
+      width: 80%;
+      color: red;
+      font-size: 1.1rem;
+    }
+    #canvasDiv {
+      position: relative;
+      margin: 0 auto 50px auto; /* 底部留出空间给按钮 */
+      display: none;
+      text-align: center;
+      overflow: hidden;
+      background: transparent;
+      max-width: 100%;
+    }
+    #instructionText {
+      text-align: center;
+      margin-bottom: 10px;
+      font-size: 1rem;
+      color: #333;
+    }
+    #resultCanvas {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 0 auto;
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+<h1>Smile Video Simulation Demo</h1>
+
+<!-- 首次使用时，“Upload”按钮可见；点击后选择视频 -->
+<button id="uploadBtn" onclick="pickFile()">Upload Smile MP4 Video</button>
+<!-- 文件选择框 -->
+<input type="file" id="fileInput" accept="video/mp4" style="display:none;" />
+
+<!-- 进度显示 -->
+<div id="progress" style="display:none;"></div>
+<!-- 错误信息显示 -->
+<div id="errorDiv" style="display:none;"></div>
+
+<!-- 结果区域 -->
+<div id="canvasDiv">
+  <div id="instructionText">
+    Drag the green line left or right to compare the original and processed videos
+  </div>
+  <canvas id="resultCanvas"></canvas>
+</div>
+
+<!-- 重试按钮 -->
+<button id="retryBtn" style="display:none;" onclick="tryAnother()">Try another MP4 smile video</button>
+
+<script>
+  /*******************************************************
+   * ==========  服务器及凭证信息  ========================
+   *******************************************************/
+   const params = new URLSearchParams(window.location.search);
+    const base_url = params.get('base_url');
+    const file_server_url = params.get('file_server_url');
+    const user_id = params.get("user_id");
+    const zh_token = params.get("zh_token");
+  /*******************************************************
+   * ==========  全局变量  ===============================
+   *******************************************************/
+  let originalVideo = null;   // 原视频(HTMLVideoElement)
+  let processedVideo = null;  // 处理后视频(HTMLVideoElement)
+  let canvas = null;
+  let ctx = null;
+
+  let boundary = 0;       // 分割线x坐标
+  let dragging = false;   // 是否正在拖拽
+
+  let rafId = null;       // requestAnimationFrame 用的ID, 以便停止渲染循环
+
+  /*******************************************************
+   * ==========  选择视频流程  ============================
+   *******************************************************/
+  function pickFile() {
+    document.getElementById("fileInput").click();
+  }
+
+  // 文件选择事件
+  document.getElementById("fileInput").addEventListener("change", async function(evt) {
+    if (evt.target.files.length === 0) return;  // 用户未选文件则不动
+
+    // **用户确认选了新文件，先清理旧视频**（停止播放/释放资源）
+    cleanUpOldVideos();
+
+    const file = evt.target.files[0];
+    try {
+      // 为了让用户在本地就能预览“原视频”
+      originalVideo = await fileToVideo(file);
+    } catch(e) {
+      alert("Failed to load original video: " + e);
+      return;
+    }
+
+    // 进入上传 + 处理流程
+    startJob(file);
+  });
+
+  // 点击“Try another smile video”按钮 -> 仅打开文件选择对话框，不重置页面
+  function tryAnother() {
+    document.getElementById("fileInput").value = "";
+    pickFile();
+  }
+
+  /*******************************************************
+   * ==========  处理流程  ===============================
+   *******************************************************/
+  async function startJob(file) {
+    // UI处理
+    document.getElementById("uploadBtn").style.display = "none";
+    document.getElementById("progress").style.display = "block";
+    document.getElementById("errorDiv").style.display = "none";
+    document.getElementById("canvasDiv").style.display = "none";
+    document.getElementById("retryBtn").style.display = "none";
+
+    try {
+      // 1. 上传视频
+      document.getElementById("progress").innerText = "Uploading your video...";
+      let uploadUrl = await getUploadUrl("mp4"); // 强制后缀=mp4
+      await uploadFile(uploadUrl, file);
+      let videoUrn = getUrnFromUrl(uploadUrl);
+
+      // 2. 创建 smile-video-simulation 任务
+      document.getElementById("progress").innerText = "Processing your video...";
+      let run_id = await createJob(videoUrn);
+
+      // 3. 等待任务完成（1秒轮询）
+      await waitForCompletion(run_id);
+
+      // 4. 获取结果
+      document.getElementById("progress").innerText = "Pulling back results...";
+      let resultData = await getJobResult(run_id);
+
+      // 下载处理后视频
+      let processedBlob = await downloadFile(resultData["result"]["video"]);
+      processedVideo = await blobToVideo(processedBlob);
+
+      // 显示结果
+      document.getElementById("progress").style.display = "none";
+      document.querySelector("h1").innerText = "Simulation Result";
+      document.getElementById("canvasDiv").style.display = "block";
+
+      // 准备canvas, 事件, 播放
+      setupCanvas();
+      initDragEvent();
+      playBothVideos();
+
+      // 启动动画渲染循环
+      drawFrame();
+
+      document.getElementById("retryBtn").style.display = "inline-block";
+    } catch (error) {
+      console.error(error);
+      document.getElementById("progress").style.display = "none";
+      document.getElementById("errorDiv").style.display = "block";
+      document.getElementById("errorDiv").innerText = "Simulation Failed: " + error;
+      document.getElementById("retryBtn").style.display = "inline-block";
+    }
+  }
+
+  /*******************************************************
+   * ==========  服务器交互  =============================
+   *******************************************************/
+
+  // 获取上传URL
+  async function getUploadUrl(extension) {
+    let url = file_server_url + "/scratch/APIClient/" + user_id + "/upload_url?postfix=" + extension;
+    let res = await fetch(url, {
+      method: "GET",
+      headers: {"X-ZH-TOKEN": zh_token}
+    });
+    if(!res.ok) {
+      throw new Error("Failed to get upload url: " + res.statusText);
+    }
+    let textBody = await res.text();  // 例如: "\"https://xxx.com/xxxx\""
+    return JSON.parse(textBody);      // 解析后得到真URL字符串
+  }
+
+  // 上传文件
+  async function uploadFile(uploadUrl, file) {
+    let res = await fetch(uploadUrl, {
+      method: "PUT",
+      body: file,
+      headers: {"content-type": ""}
+    });
+    if(!res.ok){
+      throw new Error("Failed to upload file: " + res.statusText);
+    }
+  }
+
+  // 从上传URL中解析URN
+  function getUrnFromUrl(uploadUrl) {
+    // 例: https://xxx/scratch/APIClient/idsdemo-api/xxxx?...
+    let pathPart = uploadUrl.substring(uploadUrl.indexOf(user_id) + user_id.length + 1);
+    pathPart = pathPart.substring(0, pathPart.indexOf("?"));
+    return "urn:zhfile:o:s:APIClient:" + user_id + ":" + pathPart;
+  }
+
+  // 创建smile视频任务
+  async function createJob(videoUrn) {
+    let job_req = {
+      "spec_group": "smile",
+      "spec_name": "smile-video-simulation",
+      "spec_version": "1.0-snapshot",
+      "user_id": user_id,
+      "user_group": "APIClient",
+      "input_data": {
+        "video": videoUrn
+      }
+    };
+    let res = await fetch(base_url + "/run", {
+      method: "POST",
+      headers: {
+        "X-ZH-TOKEN": zh_token,
+        "Content-Type": "application/json",
+        "accept": "application/json"
+      },
+      body: JSON.stringify(job_req)
+    });
+    if(!res.ok){
+      throw new Error("Failed to create job: " + res.statusText);
+    }
+    let data = await res.json();
+    return data.run_id;
+  }
+
+  // 等待任务完成
+  async function waitForCompletion(run_id) {
+    while(true) {
+      await new Promise(r => setTimeout(r, 1000)); // 1秒轮询
+      let url = base_url + "/run/" + run_id;
+      let res = await fetch(url, {
+        method: "GET",
+        headers: {"X-ZH-TOKEN": zh_token}
+      });
+      if(!res.ok){
+        throw new Error("Failed to check job status: " + res.statusText);
+      }
+      let data = await res.json();
+      if(data.failed){
+        throw new Error(data.reason_public || "Unknown reason");
+      }
+      if(data.completed){
+        break;
+      }
+    }
+  }
+
+  // 获取任务结果
+  async function getJobResult(run_id) {
+    let url = base_url + "/data/" + run_id;
+    let res = await fetch(url, {
+      method: "GET",
+      headers: {
+        "X-ZH-TOKEN": zh_token,
+        "accept": "application/json"
+      }
+    });
+    if(!res.ok){
+      throw new Error("Failed to get job result: " + res.statusText);
+    }
+    return await res.json();
+  }
+
+  // 下载处理后的视频文件
+  async function downloadFile(urn) {
+    let url = file_server_url + "/file/download?urn=" + urn;
+    let res = await fetch(url, {
+      method: "GET",
+      headers: {"X-ZH-TOKEN": zh_token}
+    });
+    if(!res.ok){
+      throw new Error("Failed to download processed video: " + res.statusText);
+    }
+    return await res.blob();
+  }
+
+  /*******************************************************
+   * ==========  视频播放、Canvas 绘制  ==================
+   *******************************************************/
+
+  // 清理旧视频(停止播放、卸载资源、停止rAF)
+  function cleanUpOldVideos() {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+
+    // 关闭原视频
+    if(originalVideo) {
+      originalVideo.pause();
+      // 移除播放源以卸载内存
+      originalVideo.removeAttribute("src");
+      originalVideo.load();
+      originalVideo = null;
+    }
+
+    // 关闭结果视频
+    if(processedVideo) {
+      processedVideo.pause();
+      processedVideo.removeAttribute("src");
+      processedVideo.load();
+      processedVideo = null;
+    }
+  }
+
+  // 把 File 转成一个 HTMLVideoElement
+  function fileToVideo(file) {
+    return new Promise((resolve, reject) => {
+      let vid = document.createElement('video');
+      vid.loop = true;
+      vid.src = URL.createObjectURL(file);
+      vid.onloadedmetadata = () => resolve(vid);
+      vid.onerror = reject;
+    });
+  }
+
+  // 把 Blob 转成 HTMLVideoElement
+  function blobToVideo(blob) {
+    return new Promise((resolve, reject) => {
+      let vid = document.createElement('video');
+      vid.loop = true;
+      let url = URL.createObjectURL(blob);
+      vid.src = url;
+      vid.onloadedmetadata = () => resolve(vid);
+      vid.onerror = reject;
+    });
+  }
+
+  // 同时播放两段视频
+  function playBothVideos() {
+    if(originalVideo) {
+      originalVideo.currentTime = 0;
+      originalVideo.play().catch(err => console.warn(err));
+    }
+    if(processedVideo) {
+      processedVideo.currentTime = 0;
+      processedVideo.play().catch(err => console.warn(err));
+    }
+  }
+
+  // 设置canvas尺寸 & 初始分割线(基于原视频大小)
+  function setupCanvas() {
+    canvas = document.getElementById("resultCanvas");
+    ctx = canvas.getContext("2d");
+
+    let vw = originalVideo.videoWidth;
+    let vh = originalVideo.videoHeight;
+
+    // 简单缩放到能放进屏幕
+    let maxWidth = window.innerWidth - 50;
+    let maxHeight = window.innerHeight - 150;
+    let scale = Math.min(maxWidth / vw, maxHeight / vh, 1);
+
+    canvas.width = vw * scale;
+    canvas.height = vh * scale;
+
+    boundary = canvas.width / 2; // 初始线在中间
+  }
+
+  // 注册在 canvas 上的指针事件
+  function initDragEvent() {
+    dragging = false;
+
+    canvas.onpointerdown = (e) => {
+      if(Math.abs(e.offsetX - boundary) < 40) {
+        dragging = true;
+      }
+    };
+    canvas.onpointermove = (e) => {
+      if(!dragging) return;
+      boundary = e.offsetX;
+      boundary = Math.max(0, Math.min(canvas.width, boundary));
+    };
+    canvas.onpointerup = () => {
+      dragging = false;
+    };
+    canvas.onpointerleave = () => {
+      dragging = false;
+    };
+  }
+
+  // 使用 requestAnimationFrame 循环绘制当前帧
+  function drawFrame() {
+    rafId = requestAnimationFrame(drawFrame);
+
+    if(!originalVideo || !processedVideo) return;
+    if(originalVideo.readyState < 2 || processedVideo.readyState < 2) return;
+
+    // 画处理后视频
+    ctx.drawImage(
+      processedVideo,
+      0, 0, processedVideo.videoWidth, processedVideo.videoHeight,
+      0, 0, canvas.width, canvas.height
+    );
+
+    // 在 boundary 左侧, 用原视频覆盖
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, boundary, canvas.height);
+    ctx.clip();
+    ctx.drawImage(
+      originalVideo,
+      0, 0, originalVideo.videoWidth, originalVideo.videoHeight,
+      0, 0, canvas.width, canvas.height
+    );
+    ctx.restore();
+
+    // 画绿色竖线
+    ctx.strokeStyle = "green";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(boundary, 0);
+    ctx.lineTo(boundary, canvas.height);
+    ctx.stroke();
+
+    // 画左右箭头
+    ctx.fillStyle = "green";
+    ctx.font = "bold 28px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("\u25C4   \u25BA", boundary, canvas.height / 2);
+  }
+
+</script>
+</body>
+</html>

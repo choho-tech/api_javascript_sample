@@ -1,0 +1,461 @@
+<!-- Please Use DeepSeek or similar AI tools to translate HTML comments. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ChohoTech Smile Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: sans-serif;
+            background: #f0f0f0;
+        }
+        h1 {
+            text-align: center;
+            margin: 20px 0;
+        }
+        #uploadBtn, #retryBtn {
+            display: block;
+            margin: 0 auto 20px auto;
+            font-size: 1rem;
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+        #progress {
+            text-align: center;
+            margin: 20px 0;
+            font-size: 1.1rem;
+        }
+        #errorDiv {
+            margin: 20px auto;
+            width: 80%;
+            color: red;
+            font-size: 1.1rem;
+        }
+        #canvasDiv {
+            position: relative;
+            margin: 0 auto 50px auto; /* 底部留出空间给按钮 */
+            display: none;
+            text-align: center;
+            overflow: hidden;
+            background: transparent; /* 去掉灰色 */
+            max-width: 100%; /* 响应式 */
+        }
+        #instructionText {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 1rem;
+            color: #333;
+        }
+        #resultCanvas {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+            background: #fff;
+        }
+    </style>
+</head>
+<body>
+    <h1>Smile Simulation Demo</h1>
+    <!-- 首次使用时，“Upload”按钮可见；点击后选择图片 -->
+    <button id="uploadBtn" onclick="pickFile()">Upload Smile Photo</button>
+    <!-- 文件选择框 -->
+    <input type="file" id="fileInput" accept="image/*" style="display:none;" />
+
+    <!-- 进度显示 -->
+    <div id="progress" style="display:none;"></div>
+    <!-- 错误信息显示 -->
+    <div id="errorDiv" style="display:none;"></div>
+
+    <!-- 结果区域 -->
+    <div id="canvasDiv">
+        <!-- 上方文字说明 -->
+        <div id="instructionText">
+            Drag the green line left or right to compare the original and processed images
+        </div>
+        <canvas id="resultCanvas"></canvas>
+    </div>
+
+    <!-- 重试按钮 -->
+    <button id="retryBtn" style="display:none;" onclick="tryAnother()">Try another smile photo</button>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const base_url = params.get('base_url');
+        const file_server_url = params.get('file_server_url');
+        const user_id = params.get("user_id");
+        const zh_token = params.get("zh_token");
+
+        let originalImg = null;    // 原图（可能已缩放）
+        let processedImg = null;   // 处理后图
+        let canvas = null;
+        let ctx = null;
+
+        // 分割线相关
+        let boundary = 0;       // 分割线x坐标
+        let dragging = false;   // 是否正在拖拽
+
+        // 点击按钮 -> 打开文件对话框
+        function pickFile() {
+            document.getElementById("fileInput").click();
+        }
+
+        // 监听文件输入
+        document.getElementById("fileInput").addEventListener("change", async function(evt) {
+            if (evt.target.files.length === 0) return;  // 未选文件则不动
+
+            // 选中一个文件
+            let file = evt.target.files[0];
+            // 1. 先将文件读取为Image对象
+            let dataURL = await fileToDataURL(file);
+
+            // 2. 创建Image以检查尺寸
+            let tempImg = await dataURLToImage(dataURL);
+
+            // 3. 如果最长边>1920，则缩放; 否则原图直接使用
+            if (tempImg.width > 1920 || tempImg.height > 1920) {
+                let scaledDataURL = scaleImageToMax1920(tempImg);
+                // 重新创建Image对象
+                originalImg = await dataURLToImage(scaledDataURL);
+
+                // 同时也要把缩放后的结果转换为新的Blob，用于上传
+                file = dataURLToBlob(scaledDataURL, file.type || "image/jpeg");
+            } else {
+                // 不需要缩放，直接用原图
+                originalImg = tempImg;
+            }
+
+            // 此时再清空并开始执行任务(流程状态)
+            // 让页面进入“上传、处理、对比”的流程
+            startJob(file);
+        });
+
+        // 开始实际的上传和调用流程
+        async function startJob(file) {
+            // UI处理
+            document.getElementById("uploadBtn").style.display = "none";
+            document.getElementById("progress").style.display = "block";
+            document.getElementById("errorDiv").style.display = "none";
+            document.getElementById("canvasDiv").style.display = "none";
+            document.getElementById("retryBtn").style.display = "none";
+
+            try {
+                // 1. 上传图片
+                document.getElementById("progress").innerText = "Uploading your image...";
+                // 这里强行指定jpg后缀
+                let uploadUrl = await getUploadUrl("jpg");
+                await uploadFile(uploadUrl, file);
+                let imageUrn = getUrnFromUrl(uploadUrl);
+
+                // 2. 创建 Smile Sim 任务
+                document.getElementById("progress").innerText = "Processing...";
+                let run_id = await createJob(imageUrn);
+
+                // 3. 等待任务完成（1秒轮询）
+                await waitForCompletion(run_id);
+
+                // 4. 获取结果
+                document.getElementById("progress").innerText = "Pulling back results...";
+                let resultData = await getJobResult(run_id);
+
+                // 处理后图
+                let processedBlob = await downloadFile(resultData["result"]["image"]);
+                processedImg = await blobToImage(processedBlob);
+
+                // 显示结果
+                document.getElementById("progress").style.display = "none";
+                document.querySelector("h1").innerText = "Simulation Result";
+                document.getElementById("canvasDiv").style.display = "block";
+
+                setupCanvas();
+                initDragEvent();
+                draw();
+
+                document.getElementById("retryBtn").style.display = "inline-block";
+            } catch (error) {
+                console.error(error);
+                document.getElementById("progress").style.display = "none";
+                document.getElementById("errorDiv").style.display = "block";
+                document.getElementById("errorDiv").innerText = "Simulation Failed: " + error;
+                document.getElementById("retryBtn").style.display = "inline-block";
+            }
+        }
+
+        // 点击“Try another smile photo”按钮 -> 仅打开文件选择对话框，不重置页面
+        function tryAnother() {
+            document.getElementById("fileInput").value = "";
+            pickFile();
+        }
+
+        // 获取上传URL（强制用后缀jpg）
+        async function getUploadUrl(extension) {
+            let url = file_server_url + "/scratch/APIClient/" + user_id + "/upload_url?postfix=" + extension;
+            let res = await fetch(url, {
+                method: "GET",
+                headers: {"X-ZH-TOKEN": zh_token}
+            });
+            if(!res.ok) {
+                throw new Error("Failed to get upload url: " + res.statusText);
+            }
+            let textBody = await res.text();  // 例如: "\"https://xxx.com/xxxx\""
+            return JSON.parse(textBody);      // 解析后得到真URL字符串
+        }
+
+        // 上传文件
+        async function uploadFile(uploadUrl, file) {
+            let res = await fetch(uploadUrl, {
+                method: "PUT",
+                body: file,
+                headers: {"content-type": ""}
+            });
+            if(!res.ok){
+                throw new Error("Failed to upload file: " + res.statusText);
+            }
+        }
+
+        // 从上传URL中解析URN
+        function getUrnFromUrl(uploadUrl) {
+            // uploadUrl 例: https://xxx/scratch/APIClient/idsdemo-api/xxxx?...
+            let pathPart = uploadUrl.substring(uploadUrl.indexOf(user_id) + user_id.length + 1);
+            pathPart = pathPart.substring(0, pathPart.indexOf("?"));
+            return "urn:zhfile:o:s:APIClient:" + user_id + ":" + pathPart;
+        }
+
+        // 创建Smile任务，type改为 "jpg"
+        async function createJob(imageUrn) {
+            let job_req = {
+                "spec_group": "smile",
+                "spec_name": "smile-sim-lip-preserve",
+                "spec_version": "1.0-snapshot",
+                "user_id": user_id,
+                "user_group": "APIClient",
+                "input_data": {
+                    "image": imageUrn
+                },
+                "output_config": {
+                    "image": {
+                        "type": "jpg"
+                    }
+                }
+            };
+            let res = await fetch(base_url + "/run", {
+                method: "POST",
+                headers: {
+                    "X-ZH-TOKEN": zh_token,
+                    "Content-Type": "application/json",
+                    "accept": "application/json"
+                },
+                body: JSON.stringify(job_req)
+            });
+            if(!res.ok) {
+                throw new Error("Failed to create job: " + res.statusText);
+            }
+            let data = await res.json();
+            return data.run_id;
+        }
+
+        // 等待任务完成
+        async function waitForCompletion(run_id) {
+            while(true) {
+                await new Promise(r => setTimeout(r, 1000)); // 1秒轮询
+                let url = base_url + "/run/" + run_id;
+                let res = await fetch(url, {
+                    method: "GET",
+                    headers: {"X-ZH-TOKEN": zh_token}
+                });
+                if(!res.ok){
+                    throw new Error("Failed to check job status: " + res.statusText);
+                }
+                let data = await res.json();
+                if(data.failed){
+                    throw new Error(data.reason_public || "Unknown reason");
+                }
+                if(data.completed){
+                    break;
+                }
+            }
+        }
+
+        // 获取任务结果
+        async function getJobResult(run_id) {
+            let url = base_url + "/data/" + run_id;
+            let res = await fetch(url, {
+                method: "GET",
+                headers: {
+                    "X-ZH-TOKEN": zh_token,
+                    "accept": "application/json"
+                }
+            });
+            if(!res.ok){
+                throw new Error("Failed to get job result: " + res.statusText);
+            }
+            return await res.json();
+        }
+
+        // 下载处理后的文件
+        async function downloadFile(urn) {
+            let url = file_server_url + "/file/download?urn=" + urn;
+            let res = await fetch(url, {
+                method: "GET",
+                headers: {"X-ZH-TOKEN": zh_token}
+            });
+            if(!res.ok){
+                throw new Error("Failed to download processed image: " + res.statusText);
+            }
+            return await res.blob();
+        }
+
+        // blob -> Image对象
+        function blobToImage(blob) {
+            return new Promise((resolve, reject) => {
+                let url = URL.createObjectURL(blob);
+                let img = new Image();
+                img.onload = function() {
+                    URL.revokeObjectURL(url);
+                    resolve(img);
+                };
+                img.onerror = function(e){
+                    reject(e);
+                };
+                img.src = url;
+            });
+        }
+
+        // =========== Canvas 相关 =============
+
+        // 设置canvas尺寸 & 初始分割线
+        function setupCanvas() {
+            canvas = document.getElementById("resultCanvas");
+            ctx = canvas.getContext("2d");
+
+            // 以“originalImg”的宽高为基准进行缩放
+            let ow = originalImg.width;
+            let oh = originalImg.height;
+
+            let maxWidth = window.innerWidth - 50;
+            let maxHeight = window.innerHeight - 150;
+            let scale = Math.min(maxWidth / ow, maxHeight / oh, 1);
+
+            canvas.width = ow * scale;
+            canvas.height = oh * scale;
+
+            boundary = canvas.width / 2; // 初始线在中间
+        }
+
+        // 注册在 canvas 上的指针事件
+        function initDragEvent() {
+            dragging = false;
+
+            canvas.onpointerdown = (e) => {
+                // 如果鼠标(或手指)在分割线一定范围内,开始拖动
+                if(Math.abs(e.offsetX - boundary) < 40) {
+                    dragging = true;
+                }
+            };
+            canvas.onpointermove = (e) => {
+                if(!dragging) return;
+                boundary = e.offsetX;
+                boundary = Math.max(0, Math.min(canvas.width, boundary));
+                draw();
+            };
+            canvas.onpointerup = () => {
+                dragging = false;
+            };
+            canvas.onpointerleave = () => {
+                dragging = false;
+            };
+        }
+
+        // 绘制对比图 + 分割线 + 箭头
+        function draw() {
+            // 先画处理后图
+            ctx.drawImage(
+                processedImg,
+                0, 0, processedImg.width, processedImg.height,
+                0, 0, canvas.width, canvas.height
+            );
+
+            // 再在boundary左侧覆盖原图
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(0, 0, boundary, canvas.height);
+            ctx.clip();
+            ctx.drawImage(
+                originalImg,
+                0, 0, originalImg.width, originalImg.height,
+                0, 0, canvas.width, canvas.height
+            );
+            ctx.restore();
+
+            // 画绿色竖线
+            ctx.strokeStyle = "green";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(boundary, 0);
+            ctx.lineTo(boundary, canvas.height);
+            ctx.stroke();
+
+            // 在线中心画左右箭头(大一些,实心)
+            ctx.fillStyle = "green";
+            ctx.font = "bold 28px sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            // \u25C4 (◄), \u25BA (►)均为实心方向符号
+            ctx.fillText("\u25C4   \u25BA", boundary, canvas.height / 2);
+        }
+
+        // =========== 工具函数 =============
+
+        // 把 File 转换为 dataURL
+        function fileToDataURL(file) {
+            return new Promise((resolve, reject) => {
+                let reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // 把 dataURL 转成 Image 对象
+        function dataURLToImage(dataURL) {
+            return new Promise((resolve, reject) => {
+                let img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+                img.src = dataURL;
+            });
+        }
+
+        // 将 dataURL 转换成 Blob
+        function dataURLToBlob(dataURL, mimeType="image/jpeg") {
+            // dataURL: "data:image/png;base64,xxxxxx"
+            const bytes = atob(dataURL.split(',')[1]);
+            const buffer = new Uint8Array(bytes.length);
+            for(let i = 0; i < bytes.length; i++){
+                buffer[i] = bytes.charCodeAt(i);
+            }
+            return new Blob([buffer], {type: mimeType});
+        }
+
+        // 如果最长边>1920则缩放
+        function scaleImageToMax1920(img) {
+            let ow = img.width;
+            let oh = img.height;
+            let scale = 1920 / Math.max(ow, oh);
+            let newW = ow * scale;
+            let newH = oh * scale;
+
+            // 用离屏canvas缩放
+            let offCanvas = document.createElement('canvas');
+            offCanvas.width = newW;
+            offCanvas.height = newH;
+            let offCtx = offCanvas.getContext('2d');
+            offCtx.drawImage(img, 0, 0, newW, newH);
+
+            return offCanvas.toDataURL("image/jpeg");
+        }
+    </script>
+</body>
+</html>
